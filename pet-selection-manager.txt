@@ -1,0 +1,298 @@
+// PetSelectionManager.cs - Handles the initial pet selection process
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+
+public class PetSelectionManager : MonoBehaviour
+{
+    [Header("UI References")]
+    [SerializeField] private GameObject petSelectionPanel;
+    [SerializeField] private RectTransform petCardContainer;
+    [SerializeField] private GameObject petCardPrefab;
+    [SerializeField] private Button confirmButton;
+    [SerializeField] private Button randomizeButton;
+    [SerializeField] private TextMeshProUGUI selectionMessageText;
+    
+    [Header("Preview")]
+    [SerializeField] private RectTransform previewContainer;
+    [SerializeField] private Image petPreviewImage;
+    [SerializeField] private TextMeshProUGUI petNameText;
+    [SerializeField] private TextMeshProUGUI petDescriptionText;
+    [SerializeField] private TextMeshProUGUI petElementText;
+    [SerializeField] private TextMeshProUGUI petRarityText;
+    [SerializeField] private TextMeshProUGUI petAbilitiesText;
+    
+    // State
+    private List<PetRegistryEntry> availableStarterPets = new List<PetRegistryEntry>();
+    private PetRegistryEntry selectedPet;
+    private List<GameObject> instantiatedCards = new List<GameObject>();
+    
+    // Events
+    public Action<string> OnPetSelected;
+    
+    private void Start()
+    {
+        if (confirmButton)
+        {
+            confirmButton.onClick.AddListener(ConfirmSelection);
+            confirmButton.interactable = false;
+        }
+        
+        if (randomizeButton)
+        {
+            randomizeButton.onClick.AddListener(RandomizeSelection);
+        }
+        
+        // Hide panel initially
+        if (petSelectionPanel)
+        {
+            petSelectionPanel.SetActive(false);
+        }
+    }
+    
+    public void ShowPetSelection()
+    {
+        // Show the panel
+        if (petSelectionPanel)
+        {
+            petSelectionPanel.SetActive(true);
+        }
+        
+        // Load available starter pets
+        LoadStarterPets();
+        
+        // Create pet cards
+        CreatePetCards();
+        
+        // Set welcome message
+        if (selectionMessageText)
+        {
+            selectionMessageText.text = "Welcome to Chroma Companions! Choose your first pet companion:";
+        }
+    }
+    
+    private void LoadStarterPets()
+    {
+        // Get starter pets from registry
+        if (PetRegistry.Instance != null)
+        {
+            availableStarterPets = PetRegistry.Instance.GetStarterPets();
+        }
+        else
+        {
+            Debug.LogError("PetRegistry not found!");
+        }
+        
+        // Fallback if no pets found
+        if (availableStarterPets.Count == 0)
+        {
+            Debug.LogWarning("No starter pets found! Using default pets.");
+            
+            // Create some default pets for testing
+            availableStarterPets.Add(CreateDefaultPet("ColorDragon", "Color Dragon", "A dragon that can change colors and control elements.", PetRarity.Rare, PetElement.Fire));
+            availableStarterPets.Add(CreateDefaultPet("RainbowBunny", "Rainbow Bunny", "A cheerful bunny that generates resources with its happiness.", PetRarity.Uncommon, PetElement.Light));
+            availableStarterPets.Add(CreateDefaultPet("PuzzleFox", "Puzzle Fox", "A clever fox that excels at mini-games and finding treasures.", PetRarity.Uncommon, PetElement.Air));
+        }
+    }
+    
+    private PetRegistryEntry CreateDefaultPet(string id, string name, string description, PetRarity rarity, PetElement element)
+    {
+        return new PetRegistryEntry
+        {
+            petId = id,
+            displayName = name,
+            description = description,
+            rarity = rarity,
+            defaultElement = element,
+            unlockLevel = 1,
+            baseCost = 100,
+            isLimited = false,
+            specialAbilities = new string[] { "Special Ability 1", "Special Ability 2" }
+        };
+    }
+    
+    private void CreatePetCards()
+    {
+        // Clear existing cards
+        foreach (GameObject card in instantiatedCards)
+        {
+            Destroy(card);
+        }
+        instantiatedCards.Clear();
+        
+        // Create new cards
+        foreach (PetRegistryEntry pet in availableStarterPets)
+        {
+            if (petCardPrefab && petCardContainer)
+            {
+                GameObject cardObj = Instantiate(petCardPrefab, petCardContainer);
+                instantiatedCards.Add(cardObj);
+                
+                // Setup card
+                SetupPetCard(cardObj, pet);
+            }
+        }
+    }
+    
+    private void SetupPetCard(GameObject cardObj, PetRegistryEntry pet)
+    {
+        // Find components
+        Image petImage = cardObj.transform.Find("PetImage")?.GetComponent<Image>();
+        TextMeshProUGUI nameText = cardObj.transform.Find("NameText")?.GetComponent<TextMeshProUGUI>();
+        TextMeshProUGUI elementText = cardObj.transform.Find("ElementText")?.GetComponent<TextMeshProUGUI>();
+        Button selectButton = cardObj.transform.Find("SelectButton")?.GetComponent<Button>();
+        
+        // Set values
+        if (petImage && pet.previewImage)
+        {
+            petImage.sprite = pet.previewImage;
+        }
+        
+        if (nameText)
+        {
+            nameText.text = pet.displayName;
+        }
+        
+        if (elementText)
+        {
+            elementText.text = pet.defaultElement.ToString();
+        }
+        
+        // Set button action
+        if (selectButton)
+        {
+            selectButton.onClick.AddListener(() => OnPetCardSelected(pet));
+        }
+    }
+    
+    private void OnPetCardSelected(PetRegistryEntry pet)
+    {
+        // Update selected pet
+        selectedPet = pet;
+        
+        // Update preview
+        UpdatePetPreview(pet);
+        
+        // Enable confirm button
+        if (confirmButton)
+        {
+            confirmButton.interactable = true;
+        }
+    }
+    
+    private void UpdatePetPreview(PetRegistryEntry pet)
+    {
+        if (previewContainer)
+        {
+            previewContainer.gameObject.SetActive(true);
+        }
+        
+        if (petPreviewImage && pet.previewImage)
+        {
+            petPreviewImage.sprite = pet.previewImage;
+        }
+        
+        if (petNameText)
+        {
+            petNameText.text = pet.displayName;
+        }
+        
+        if (petDescriptionText)
+        {
+            petDescriptionText.text = pet.description;
+        }
+        
+        if (petElementText)
+        {
+            petElementText.text = "Element: " + pet.defaultElement.ToString();
+        }
+        
+        if (petRarityText)
+        {
+            petRarityText.text = "Rarity: " + pet.rarity.ToString();
+        }
+        
+        if (petAbilitiesText && pet.specialAbilities != null)
+        {
+            petAbilitiesText.text = "Special Abilities:\n- " + string.Join("\n- ", pet.specialAbilities);
+        }
+    }
+    
+    private void RandomizeSelection()
+    {
+        if (availableStarterPets.Count == 0)
+            return;
+        
+        // Select random pet
+        int randomIndex = UnityEngine.Random.Range(0, availableStarterPets.Count);
+        PetRegistryEntry randomPet = availableStarterPets[randomIndex];
+        
+        // Update selection
+        OnPetCardSelected(randomPet);
+    }
+    
+    private void ConfirmSelection()
+    {
+        if (selectedPet == null)
+            return;
+        
+        // Adopt the pet
+        if (GameManager.Instance != null)
+        {
+            PetBase newPet = GameManager.Instance.AdoptPet(selectedPet.petId);
+            
+            if (newPet != null)
+            {
+                // Show welcome message
+                UIManager.Instance.ShowMessage("Welcome " + selectedPet.displayName + " to your collection!");
+                
+                // Trigger event
+                OnPetSelected?.Invoke(selectedPet.petId);
+                
+                // Close panel
+                if (petSelectionPanel)
+                {
+                    petSelectionPanel.SetActive(false);
+                }
+                
+                // Show pet home
+                if (UIManager.Instance != null)
+                {
+                    UIManager.Instance.ShowPetHome();
+                }
+            }
+            else
+            {
+                Debug.LogError("Failed to adopt pet: " + selectedPet.petId);
+            }
+        }
+        else
+        {
+            Debug.LogError("GameManager not found!");
+        }
+    }
+    
+    // Public API
+    public bool IsSelectionComplete()
+    {
+        // Check if user has at least one pet
+        if (UserData.Instance != null)
+        {
+            return UserData.Instance.ownedPets.Count > 0;
+        }
+        
+        return false;
+    }
+    
+    public void ShowIfNeeded()
+    {
+        // Show pet selection if user doesn't have any pets
+        if (!IsSelectionComplete())
+        {
+            ShowPetSelection();
+        }
+    }
+}

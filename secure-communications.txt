@@ -1,0 +1,667 @@
+// SecureCommunicationManager.cs - Handles secure API communications and data transfer
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading.Tasks;
+using UnityEngine;
+using UnityEngine.Networking;
+
+public class SecureCommunicationManager : MonoBehaviour
+{
+    private static SecureCommunicationManager _instance;
+    public static SecureCommunicationManager Instance
+    {
+        get
+        {
+            if (_instance == null)
+            {
+                Debug.LogError("SecureCommunicationManager instance not found!");
+            }
+            return _instance;
+        }
+    }
+    
+    [Header("Communication Settings")]
+    [SerializeField] private string apiBaseUrl = "https://api.chromacompanions.com";
+    [SerializeField] private float apiTimeoutSeconds = 10f;
+    [SerializeField] private bool useSSLPinning = true;
+    [SerializeField] private bool useJWTAuthentication = true;
+    [SerializeField] private bool useRequestSigning = true;
+    
+    // API Endpoints
+    private readonly string authEndpoint = "/auth";
+    private readonly string profileEndpoint = "/user/profile";
+    private readonly string syncEndpoint = "/user/sync";
+    private readonly string leaderboardEndpoint = "/leaderboard";
+    private readonly string storeEndpoint = "/store";
+    private readonly string eventsEndpoint = "/events";
+    
+    // Security
+    private string authToken = string.Empty;
+    private DateTime tokenExpiration;
+    private string apiKey = string.Empty; // Would be loaded from secure storage
+    private List<string> validCertificateHashes = new List<string>();
+    
+    // Events
+    public Action<string> OnCommunicationError;
+    public Action<ApiRequestType> OnRequestCompleted;
+    
+    // Cache for request throttling
+    private Dictionary<string, DateTime> lastRequestTimes = new Dictionary<string, DateTime>();
+    private Dictionary<string, int> requestCounts = new Dictionary<string, int>();
+    
+    private void Awake()
+    {
+        if (_instance != null && _instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+        
+        _instance = this;
+        DontDestroyOnLoad(gameObject);
+        
+        // Initialize secure communication
+        InitializeSecureCommunication();
+    }
+    
+    private void InitializeSecureCommunication()
+    {
+        // Load API key from secure storage
+        LoadAPIKey();
+        
+        // Setup SSL certificate pinning
+        if (useSSLPinning)
+        {
+            SetupCertificatePinning();
+        }
+    }
+    
+    private void LoadAPIKey()
+    {
+        // In a real implementation, this would load from secure storage
+        // For this example, we'll hardcode a value (never do this in production)
+        apiKey = "api_key_would_be_securely_loaded_here";
+    }
+    
+    private void SetupCertificatePinning()
+    {
+        // In a real implementation, these would be the hashes of your valid SSL certificates
+        // For this example, we'll add placeholder hashes
+        validCertificateHashes.Add("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+        validCertificateHashes.Add("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=");
+    }
+    
+    #region Authentication
+    
+    public IEnumerator Authenticate(string username, string password, Action<bool, string> callback)
+    {
+        // Create authentication payload
+        Dictionary<string, string> payload = new Dictionary<string, string>
+        {
+            { "username", username },
+            { "password", SecurityManager.Instance.ComputeHash(password) }, // Send hashed password
+            { "device_id", SystemInfo.deviceUniqueIdentifier },
+            { "app_version", Application.version },
+            { "platform", Application.platform.ToString() }
+        };
+        
+        // Send authentication request
+        yield return SendSecureRequest(
+            authEndpoint,
+            ApiRequestType.Auth,
+            RequestMethod.POST,
+            payload,
+            false, // Don't require authentication for login
+            (success, response) =>
+            {
+                if (success)
+                {
+                    try
+                    {
+                        // Parse response JSON
+                        AuthResponse authResponse = JsonUtility.FromJson<AuthResponse>(response);
+                        
+                        if (authResponse.success)
+                        {
+                            // Store token and expiration
+                            authToken = authResponse.token;
+                            tokenExpiration = DateTime.Now.AddSeconds(authResponse.expires_in);
+                            
+                            callback(true, "Authentication successful");
+                        }
+                        else
+                        {
+                            callback(false, authResponse.message);
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogError("Error parsing auth response: " + e.Message);
+                        callback(false, "Authentication failed: Invalid response");
+                    }
+                }
+                else
+                {
+                    callback(false, "Authentication failed: Network error");
+                }
+            }
+        );
+    }
+    
+    public bool IsAuthenticated()
+    {
+        return !string.IsNullOrEmpty(authToken) && DateTime.Now < tokenExpiration;
+    }
+    
+    public void LogOut()
+    {
+        authToken = string.Empty;
+        tokenExpiration = DateTime.MinValue;
+    }
+    
+    #endregion
+    
+    #region API Requests
+    
+    public IEnumerator GetUserProfile(Action<bool, UserProfile> callback)
+    {
+        yield return SendSecureRequest(
+            profileEndpoint,
+            ApiRequestType.Profile,
+            RequestMethod.GET,
+            null,
+            true, // Require authentication
+            (success, response) =>
+            {
+                if (success)
+                {
+                    try
+                    {
+                        UserProfile profile = JsonUtility.FromJson<UserProfile>(response);
+                        callback(true, profile);
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogError("Error parsing profile response: " + e.Message);
+                        callback(false, null);
+                    }
+                }
+                else
+                {
+                    callback(false, null);
+                }
+            }
+        );
+    }
+    
+    public IEnumerator SyncUserData(string userData, Action<bool, string> callback)
+    {
+        Dictionary<string, string> payload = new Dictionary<string, string>
+        {
+            { "data", userData },
+            { "timestamp", DateTime.UtcNow.ToString("o") },
+            { "version", Application.version }
+        };
+        
+        yield return SendSecureRequest(
+            syncEndpoint,
+            ApiRequestType.Sync,
+            RequestMethod.POST,
+            payload,
+            true, // Require authentication
+            (success, response) =>
+            {
+                if (success)
+                {
+                    try
+                    {
+                        SyncResponse syncResponse = JsonUtility.FromJson<SyncResponse>(response);
+                        callback(syncResponse.success, syncResponse.message);
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogError("Error parsing sync response: " + e.Message);
+                        callback(false, "Sync failed: Invalid response");
+                    }
+                }
+                else
+                {
+                    callback(false, "Sync failed: Network error");
+                }
+            }
+        );
+    }
+    
+    public IEnumerator GetLeaderboard(string leaderboardId, int count, Action<bool, List<LeaderboardEntry>> callback)
+    {
+        string endpoint = leaderboardEndpoint + "?id=" + leaderboardId + "&count=" + count;
+        
+        yield return SendSecureRequest(
+            endpoint,
+            ApiRequestType.Leaderboard,
+            RequestMethod.GET,
+            null,
+            true, // Require authentication
+            (success, response) =>
+            {
+                if (success)
+                {
+                    try
+                    {
+                        LeaderboardResponse leaderboardResponse = JsonUtility.FromJson<LeaderboardResponse>(response);
+                        callback(true, leaderboardResponse.entries);
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogError("Error parsing leaderboard response: " + e.Message);
+                        callback(false, null);
+                    }
+                }
+                else
+                {
+                    callback(false, null);
+                }
+            }
+        );
+    }
+    
+    public IEnumerator GetStoreItems(Action<bool, List<StoreItem>> callback)
+    {
+        yield return SendSecureRequest(
+            storeEndpoint,
+            ApiRequestType.Store,
+            RequestMethod.GET,
+            null,
+            true, // Require authentication
+            (success, response) =>
+            {
+                if (success)
+                {
+                    try
+                    {
+                        StoreResponse storeResponse = JsonUtility.FromJson<StoreResponse>(response);
+                        callback(true, storeResponse.items);
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogError("Error parsing store response: " + e.Message);
+                        callback(false, null);
+                    }
+                }
+                else
+                {
+                    callback(false, null);
+                }
+            }
+        );
+    }
+    
+    public IEnumerator GetEvents(Action<bool, List<GameEvent>> callback)
+    {
+        yield return SendSecureRequest(
+            eventsEndpoint,
+            ApiRequestType.Events,
+            RequestMethod.GET,
+            null,
+            true, // Require authentication
+            (success, response) =>
+            {
+                if (success)
+                {
+                    try
+                    {
+                        EventsResponse eventsResponse = JsonUtility.FromJson<EventsResponse>(response);
+                        callback(true, eventsResponse.events);
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogError("Error parsing events response: " + e.Message);
+                        callback(false, null);
+                    }
+                }
+                else
+                {
+                    callback(false, null);
+                }
+            }
+        );
+    }
+    
+    #endregion
+    
+    #region Request Handling
+    
+    private IEnumerator SendSecureRequest(
+        string endpoint, 
+        ApiRequestType requestType,
+        RequestMethod method, 
+        Dictionary<string, string> payload,
+        bool requireAuth,
+        Action<bool, string> callback)
+    {
+        // Check if authenticated when required
+        if (requireAuth && !IsAuthenticated())
+        {
+            Debug.LogWarning("Attempted to make authenticated request while not authenticated");
+            callback(false, "Not authenticated");
+            yield break;
+        }
+        
+        // Check for request throttling
+        if (!CheckRequestThrottling(endpoint))
+        {
+            Debug.LogWarning("Request throttled: " + endpoint);
+            callback(false, "Request throttled");
+            yield break;
+        }
+        
+        // Construct the full URL
+        string url = apiBaseUrl + endpoint;
+        
+        // Create the appropriate request
+        UnityWebRequest request;
+        
+        switch (method)
+        {
+            case RequestMethod.GET:
+                request = UnityWebRequest.Get(url);
+                break;
+                
+            case RequestMethod.POST:
+                string jsonPayload = payload != null ? SerializePayload(payload) : "{}";
+                byte[] bodyRaw = Encoding.UTF8.GetBytes(jsonPayload);
+                request = new UnityWebRequest(url, "POST");
+                request.uploadHandler = new UploadHandlerRaw(bodyRaw);
+                request.downloadHandler = new DownloadHandlerBuffer();
+                request.SetRequestHeader("Content-Type", "application/json");
+                break;
+                
+            case RequestMethod.PUT:
+                jsonPayload = payload != null ? SerializePayload(payload) : "{}";
+                bodyRaw = Encoding.UTF8.GetBytes(jsonPayload);
+                request = new UnityWebRequest(url, "PUT");
+                request.uploadHandler = new UploadHandlerRaw(bodyRaw);
+                request.downloadHandler = new DownloadHandlerBuffer();
+                request.SetRequestHeader("Content-Type", "application/json");
+                break;
+                
+            case RequestMethod.DELETE:
+                request = UnityWebRequest.Delete(url);
+                break;
+                
+            default:
+                Debug.LogError("Unsupported request method");
+                callback(false, "Unsupported request method");
+                yield break;
+        }
+        
+        // Add authentication if required
+        if (requireAuth && useJWTAuthentication)
+        {
+            request.SetRequestHeader("Authorization", "Bearer " + authToken);
+        }
+        
+        // Add API key
+        request.SetRequestHeader("X-Api-Key", apiKey);
+        
+        // Add signature if enabled
+        if (useRequestSigning)
+        {
+            string timestamp = DateTime.UtcNow.Ticks.ToString();
+            request.SetRequestHeader("X-Timestamp", timestamp);
+            
+            string dataToSign = url + timestamp;
+            if (payload != null)
+            {
+                dataToSign += SerializePayload(payload);
+            }
+            
+            string signature = SignRequest(dataToSign);
+            request.SetRequestHeader("X-Signature", signature);
+        }
+        
+        // Add common headers
+        request.SetRequestHeader("User-Agent", "ChromaCompanions/" + Application.version);
+        request.SetRequestHeader("X-Device-ID", SystemInfo.deviceUniqueIdentifier);
+        
+        // Set timeout
+        request.timeout = Mathf.RoundToInt(apiTimeoutSeconds);
+        
+        // Add certificate validation if SSL pinning is enabled
+        if (useSSLPinning)
+        {
+            request.certificateHandler = new CustomCertificateHandler(validCertificateHashes);
+        }
+        
+        // Send the request
+        yield return request.SendWebRequest();
+        
+        // Handle the response
+        if (request.result != UnityWebRequest.Result.Success)
+        {
+            Debug.LogError("Request error: " + request.error);
+            OnCommunicationError?.Invoke("API error: " + request.error);
+            callback(false, request.error);
+        }
+        else
+        {
+            // Request completed successfully
+            OnRequestCompleted?.Invoke(requestType);
+            callback(true, request.downloadHandler.text);
+        }
+        
+        // Clean up
+        request.Dispose();
+    }
+    
+    private string SerializePayload(Dictionary<string, string> payload)
+    {
+        // Simple dictionary to JSON serialization
+        var entries = new List<string>();
+        foreach (var kvp in payload)
+        {
+            entries.Add(string.Format("\"{0}\":\"{1}\"", kvp.Key, kvp.Value));
+        }
+        
+        return "{" + string.Join(",", entries) + "}";
+    }
+    
+    private string SignRequest(string data)
+    {
+        // Sign the request data using HMAC-SHA256
+        using (HMACSHA256 hmac = new HMACSHA256(Encoding.UTF8.GetBytes(apiKey)))
+        {
+            byte[] hashBytes = hmac.ComputeHash(Encoding.UTF8.GetBytes(data));
+            return Convert.ToBase64String(hashBytes);
+        }
+    }
+    
+    private bool CheckRequestThrottling(string endpoint)
+    {
+        // Simple request throttling to prevent abuse
+        DateTime now = DateTime.Now;
+        
+        // Initialize counters if needed
+        if (!lastRequestTimes.ContainsKey(endpoint))
+        {
+            lastRequestTimes[endpoint] = now;
+            requestCounts[endpoint] = 1;
+            return true;
+        }
+        
+        // Check time since last request
+        TimeSpan timeSinceLastRequest = now - lastRequestTimes[endpoint];
+        
+        if (timeSinceLastRequest.TotalSeconds < 1) // Less than 1 second since last request
+        {
+            requestCounts[endpoint]++;
+            
+            // Too many requests in a short period
+            if (requestCounts[endpoint] > 10) // More than 10 requests in 1 second
+            {
+                return false;
+            }
+        }
+        else if (timeSinceLastRequest.TotalMinutes >= 1) // Reset counter after 1 minute
+        {
+            requestCounts[endpoint] = 1;
+        }
+        
+        // Update last request time
+        lastRequestTimes[endpoint] = now;
+        return true;
+    }
+    
+    #endregion
+}
+
+// Custom certificate validator for SSL pinning
+public class CustomCertificateHandler : CertificateHandler
+{
+    private List<string> validCertificateHashes;
+    
+    public CustomCertificateHandler(List<string> validHashes)
+    {
+        validCertificateHashes = validHashes;
+    }
+    
+    protected override bool ValidateCertificate(byte[] certificateData)
+    {
+        // Skip validation in development (Unity Editor)
+        #if UNITY_EDITOR
+        return true;
+        #endif
+        
+        // If no valid hashes are set, default to Unity's cert validation
+        if (validCertificateHashes == null || validCertificateHashes.Count == 0)
+            return true;
+        
+        // Compute hash of the certificate
+        string certificateHash = ComputeCertificateHash(certificateData);
+        
+        // Check if the certificate hash matches any of our valid hashes
+        return validCertificateHashes.Contains(certificateHash);
+    }
+    
+    private string ComputeCertificateHash(byte[] certificateData)
+    {
+        using (SHA256 sha256 = SHA256.Create())
+        {
+            byte[] hashBytes = sha256.ComputeHash(certificateData);
+            return Convert.ToBase64String(hashBytes);
+        }
+    }
+}
+
+#region Data Models
+
+// Authentication
+[Serializable]
+public class AuthResponse
+{
+    public bool success;
+    public string message;
+    public string token;
+    public int expires_in;
+}
+
+// User Profile
+[Serializable]
+public class UserProfile
+{
+    public string userId;
+    public string displayName;
+    public int level;
+    public int experience;
+    public int currency;
+    public List<string> achievements;
+    public List<string> unlockedPets;
+}
+
+// Sync
+[Serializable]
+public class SyncResponse
+{
+    public bool success;
+    public string message;
+    public string serverTimestamp;
+}
+
+// Leaderboard
+[Serializable]
+public class LeaderboardEntry
+{
+    public string userId;
+    public string displayName;
+    public int rank;
+    public int score;
+}
+
+[Serializable]
+public class LeaderboardResponse
+{
+    public List<LeaderboardEntry> entries;
+    public int totalCount;
+}
+
+// Store
+[Serializable]
+public class StoreItem
+{
+    public string id;
+    public string name;
+    public string description;
+    public int price;
+    public string imageUrl;
+    public bool isLimited;
+    public string availableUntil;
+}
+
+[Serializable]
+public class StoreResponse
+{
+    public List<StoreItem> items;
+    public bool hasPromotion;
+}
+
+// Events
+[Serializable]
+public class GameEvent
+{
+    public string id;
+    public string title;
+    public string description;
+    public string startDate;
+    public string endDate;
+    public List<string> rewards;
+}
+
+[Serializable]
+public class EventsResponse
+{
+    public List<GameEvent> events;
+    public bool hasActiveEvent;
+}
+
+#endregion
+
+public enum RequestMethod
+{
+    GET,
+    POST,
+    PUT,
+    DELETE
+}
+
+public enum ApiRequestType
+{
+    Auth,
+    Profile,
+    Sync,
+    Leaderboard,
+    Store,
+    Events
+}
